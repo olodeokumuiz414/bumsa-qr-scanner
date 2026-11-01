@@ -1,1 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
 
+  <title>BUMSA QR Scanner</title>
+
+  <script src="https://unpkg.com/html5-qrcode"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f7f5;
+      text-align: center;
+      padding: 20px;
+      margin: 0;
+    }
+
+    .container {
+      max-width: 450px;
+      margin: 30px auto;
+      background: white;
+      padding: 22px;
+      border-radius: 12px;
+      box-shadow: 0 3px 12px rgba(0,0,0,0.1);
+    }
+
+    h2 {
+      color: #176b45;
+    }
+
+    button {
+      width: 100%;
+      padding: 14px;
+      margin-top: 12px;
+      border: none;
+      border-radius: 7px;
+      background: #176b45;
+      color: white;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    #reader {
+      width: 100%;
+      margin-top: 20px;
+    }
+
+    #status {
+      margin-top: 20px;
+      font-weight: bold;
+      overflow-wrap: anywhere;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <h2>BUMSA 26/27</h2>
+  <h3>Freshers' Party QR Scanner</h3>
+
+  <p>Position the QR code inside the camera frame.</p>
+
+  <button onclick="startScanner()">START CAMERA SCANNER</button>
+
+  <div id="reader"></div>
+
+  <p id="status">Ready to scan.</p>
+
+</div>
+
+<script>
+
+let scanner = null;
+let scanning = false;
+
+function startScanner() {
+
+  if (scanning) return;
+
+  if (typeof Html5Qrcode === "undefined") {
+    document.getElementById("status").textContent =
+      "Scanner library failed to load. Check your internet connection.";
+    return;
+  }
+
+  scanner = new Html5Qrcode("reader");
+
+  scanner.start(
+    { facingMode: "environment" },
+    {
+      fps: 10,
+      qrbox: { width: 230, height: 230 }
+    },
+
+    function(decodedText) {
+
+      if (!scanning) return;
+
+      scanning = false;
+
+      document.getElementById("status").textContent =
+        "QR CODE DETECTED. Sending for verification...";
+
+      scanner.stop().then(() => {
+
+        if (window.opener && !window.opener.closed) {
+
+          window.opener.postMessage({
+            type: "BUMSA_QR_SCANNED",
+            registrationId: decodedText
+          }, "*");
+
+          document.getElementById("status").textContent =
+            "QR sent successfully. Return to the check-in page.";
+
+        } else {
+
+          document.getElementById("status").textContent =
+            "Check-in page not found. Open this scanner from the BUMSA check-in page.";
+
+        }
+
+      });
+
+    },
+
+    function(error) {}
+
+  ).then(() => {
+
+    scanning = true;
+
+    document.getElementById("status").textContent =
+      "Camera active. Ready to scan.";
+
+  }).catch(error => {
+
+    scanner = null;
+
+    document.getElementById("status").textContent =
+      "Camera could not start. Allow camera access and try again.";
+
+  });
+
+}
+
+</script>
+
+</body>
+</html>
