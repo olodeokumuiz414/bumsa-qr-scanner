@@ -3,11 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-
-  <title>BUMSA QR Scanner</title>
-
+  <title>BUMSA 26/27 Check-in</title>
   <script src="https://unpkg.com/html5-qrcode"></script>
-
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -16,74 +13,107 @@
       padding: 20px;
       margin: 0;
     }
-
     .container {
       max-width: 450px;
-      margin: 30px auto;
+      margin: 25px auto;
       background: white;
       padding: 22px;
       border-radius: 12px;
       box-shadow: 0 3px 12px rgba(0,0,0,0.1);
     }
-
-    h2 {
-      color: #176b45;
-    }
-
-    button {
+    h2 { color: #176b45; }
+    input, button {
+      box-sizing: border-box;
       width: 100%;
       padding: 14px;
       margin-top: 12px;
-      border: none;
       border-radius: 7px;
+      font-size: 16px;
+    }
+    input { border: 1px solid #ccc; }
+    button {
       background: #176b45;
       color: white;
-      font-size: 16px;
+      border: none;
       cursor: pointer;
     }
-
-    #reader {
-      width: 100%;
-      margin-top: 20px;
+    button:disabled { background: #999; }
+    #reader { width: 100%; margin-top: 20px; }
+    #resultBox {
+      display: none;
+      margin-top: 18px;
+      padding: 15px;
+      border-radius: 8px;
+      background: #f4f7f5;
     }
-
     #status {
-      margin-top: 20px;
+      margin-top: 18px;
       font-weight: bold;
       overflow-wrap: anywhere;
     }
+    #nextButton { display: none; }
   </style>
 </head>
-
 <body>
-
 <div class="container">
-
   <h2>BUMSA 26/27</h2>
-  <h3>Freshers' Party QR Scanner</h3>
+  <h3>Freshers' Party Check-in</h3>
 
-  <p>Position the QR code inside the camera frame.</p>
+  <input type="password" id="pin" placeholder="Enter Executive PIN">
 
-  <button onclick="startScanner()">START CAMERA SCANNER</button>
+  <button id="startButton" onclick="startScanner()">
+    START CAMERA SCANNER
+  </button>
 
   <div id="reader"></div>
 
+  <div id="resultBox">
+    <h3 id="resultTitle"></h3>
+    <p id="resultMessage"></p>
+    <p id="studentName"></p>
+  </div>
+
   <p id="status">Ready to scan.</p>
 
+  <button id="nextButton" onclick="scanNext()">
+    SCAN NEXT STUDENT
+  </button>
 </div>
 
 <script>
+const SCRIPT_URL =
+"https://script.google.com/macros/s/AKfycbxnYNUaWCQ3TO4NAA_Tz7xUiOBTP1BTW7sFaU-WqHdJM69oCMluAfFKXuMQ1QHq6TNt/exec";
 
 let scanner = null;
 let scanning = false;
+let verifying = false;
+
+const pinInput = document.getElementById("pin");
+
+const savedPin = sessionStorage.getItem("BUMSA_PIN");
+if (savedPin) pinInput.value = savedPin;
 
 function startScanner() {
+  const pin = pinInput.value.trim();
 
-  if (scanning) return;
+  if (!pin) {
+    document.getElementById("status").textContent =
+      "Please enter the Executive PIN.";
+    return;
+  }
+
+  if (scanning || verifying) return;
+
+  sessionStorage.setItem("BUMSA_PIN", pin);
+
+  document.getElementById("resultBox").style.display = "none";
+  document.getElementById("nextButton").style.display = "none";
+  document.getElementById("startButton").disabled = true;
 
   if (typeof Html5Qrcode === "undefined") {
     document.getElementById("status").textContent =
       "Scanner library failed to load. Check your internet connection.";
+    document.getElementById("startButton").disabled = false;
     return;
   }
 
@@ -91,64 +121,108 @@ function startScanner() {
 
   scanner.start(
     { facingMode: "environment" },
-    {
-      fps: 10,
-      qrbox: { width: 230, height: 230 }
-    },
-
+    { fps: 10, qrbox: { width: 230, height: 230 } },
     function(decodedText) {
-
-      if (!scanning) return;
+      if (!scanning || verifying) return;
 
       scanning = false;
+      verifying = true;
 
       document.getElementById("status").textContent =
-        "QR CODE DETECTED. Sending for verification...";
+        "QR detected. Verifying ticket...";
 
       scanner.stop().then(() => {
-
-        if (window.opener && !window.opener.closed) {
-
-          window.opener.postMessage({
-            type: "BUMSA_QR_SCANNED",
-            registrationId: decodedText
-          }, "*");
-
-          document.getElementById("status").textContent =
-            "QR sent successfully. Return to the check-in page.";
-
-        } else {
-
-          document.getElementById("status").textContent =
-            "Check-in page not found. Open this scanner from the BUMSA check-in page.";
-
-        }
-
+        verifyTicket(decodedText, pin);
+      }).catch(() => {
+        verifying = false;
+        document.getElementById("status").textContent =
+          "Camera could not stop. Please refresh and try again.";
+        document.getElementById("startButton").disabled = false;
       });
-
     },
-
     function(error) {}
-
   ).then(() => {
-
     scanning = true;
-
     document.getElementById("status").textContent =
       "Camera active. Ready to scan.";
-
+    document.getElementById("startButton").disabled = false;
   }).catch(error => {
-
     scanner = null;
-
+    scanning = false;
     document.getElementById("status").textContent =
       "Camera could not start. Allow camera access and try again.";
-
+    document.getElementById("startButton").disabled = false;
   });
-
 }
 
-</script>
+function verifyTicket(registrationId, pin) {
+  const callbackName = "bumsaCallback_" + Date.now();
+  const script = document.createElement("script");
+  let completed = false;
 
+  window[callbackName] = function(response) {
+    completed = true;
+    clearTimeout(timeout);
+    delete window[callbackName];
+    script.remove();
+    verifying = false;
+    showResult(response.success, response.message, response.name);
+  };
+
+  const params = new URLSearchParams({
+    action: "checkin",
+    id: registrationId,
+    pin: pin,
+    callback: callbackName
+  });
+
+  script.src = SCRIPT_URL + "?" + params.toString();
+
+  script.onerror = function() {
+    if (completed) return;
+    clearTimeout(timeout);
+    delete window[callbackName];
+    script.remove();
+    verifying = false;
+    document.getElementById("status").textContent =
+      "Could not contact the check-in server. Check your internet connection.";
+    document.getElementById("startButton").disabled = false;
+  };
+
+  const timeout = setTimeout(() => {
+    if (completed) return;
+    delete window[callbackName];
+    script.remove();
+    verifying = false;
+    document.getElementById("status").textContent =
+      "Verification timed out. Please try again.";
+    document.getElementById("startButton").disabled = false;
+  }, 20000);
+
+  document.body.appendChild(script);
+}
+
+function showResult(success, message, name) {
+  document.getElementById("resultBox").style.display = "block";
+  document.getElementById("resultTitle").textContent =
+    success ? "CHECK-IN SUCCESSFUL" : "CHECK-IN FAILED";
+  document.getElementById("resultTitle").style.color =
+    success ? "#176b45" : "#c62828";
+  document.getElementById("resultMessage").textContent = message;
+  document.getElementById("studentName").textContent =
+    name ? "Student: " + name : "";
+  document.getElementById("status").textContent =
+    "Verification complete.";
+  document.getElementById("nextButton").style.display = "block";
+}
+
+function scanNext() {
+  document.getElementById("resultBox").style.display = "none";
+  document.getElementById("nextButton").style.display = "none";
+  document.getElementById("status").textContent =
+    "Starting camera for next student...";
+  startScanner();
+}
+</script>
 </body>
 </html>
