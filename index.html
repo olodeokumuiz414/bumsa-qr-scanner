@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BUMSA 26/27 Check-in</title>
-
   <script src="https://unpkg.com/html5-qrcode"></script>
 
   <style>
@@ -45,18 +44,31 @@
       cursor: pointer;
     }
 
+    button:disabled { background: #999; }
+
     #reader { width: 100%; margin-top: 20px; }
+
+    #resultBox {
+      display: none;
+      margin-top: 18px;
+      padding: 15px;
+      border-radius: 8px;
+      background: #f4f7f5;
+    }
 
     #status {
       margin-top: 18px;
       font-weight: bold;
+      overflow-wrap: anywhere;
     }
+
+    #nextButton { display: none; }
   </style>
 </head>
 
 <body>
-
 <div class="container">
+
   <h2>BUMSA 26/27</h2>
   <h3>Freshers' Party Check-in</h3>
 
@@ -69,40 +81,34 @@
 
   <div id="reader"></div>
 
+  <div id="resultBox">
+    <h3 id="resultTitle"></h3>
+    <p id="resultMessage"></p>
+    <p id="studentName"></p>
+  </div>
+
   <p id="status">Ready to scan.</p>
+
+  <button id="nextButton" onclick="scanNext()">
+    SCAN NEXT STUDENT
+  </button>
+
 </div>
 
 <script>
-
 const SCRIPT_URL =
 "https://script.google.com/macros/s/AKfycbxnYNUaWCQ3TO4NAA_Tz7xUiOBTP1BTW7sFaU-WqHdJM69oCMluAfFKXuMQ1QHq6TNt/exec";
 
-const pinInput = document.getElementById("pin");
-
-const savedPin = localStorage.getItem("BUMSA_EXECUTIVE_PIN");
-
-if (savedPin) {
-  pinInput.value = savedPin;
-}
-
-if (location.hash.startsWith("#pin=")) {
-  const returnedPin = decodeURIComponent(
-    location.hash.substring(5)
-  );
-
-  if (returnedPin) {
-    localStorage.setItem("BUMSA_EXECUTIVE_PIN", returnedPin);
-    pinInput.value = returnedPin;
-    history.replaceState(null, "", location.pathname);
-  }
-}
-
 let scanner = null;
 let scanning = false;
-let submitting = false;
+let verifying = false;
+
+const pinInput = document.getElementById("pin");
+
+pinInput.value =
+  sessionStorage.getItem("BUMSA_PIN") || "";
 
 function startScanner() {
-
   const pin = pinInput.value.trim();
 
   if (!pin) {
@@ -111,82 +117,156 @@ function startScanner() {
     return;
   }
 
-  if (scanning || submitting) return;
+  if (scanning || verifying) return;
 
-  localStorage.setItem("BUMSA_EXECUTIVE_PIN", pin);
+  sessionStorage.setItem("BUMSA_PIN", pin);
 
-  scanner = new Html5Qrcode("reader");
-
+  document.getElementById("resultBox").style.display = "none";
+  document.getElementById("nextButton").style.display = "none";
   document.getElementById("startButton").disabled = true;
+
+  if (typeof Html5Qrcode === "undefined") {
+    document.getElementById("status").textContent =
+      "Scanner library failed to load. Check your internet.";
+    document.getElementById("startButton").disabled = false;
+    return;
+  }
+
+  if (!scanner) {
+    scanner = new Html5Qrcode("reader");
+  }
 
   scanner.start(
     { facingMode: "environment" },
     { fps: 10, qrbox: { width: 230, height: 230 } },
 
     function(decodedText) {
-
-      if (!scanning || submitting) return;
+      if (!scanning || verifying) return;
 
       scanning = false;
-      submitting = true;
+      verifying = true;
 
       document.getElementById("status").textContent =
-        "QR detected. Processing check-in...";
+        "QR detected. Verifying ticket...";
 
       scanner.stop().then(() => {
-
-        const form = document.createElement("form");
-
-        form.method = "POST";
-        form.action = SCRIPT_URL;
-
-        const idField = document.createElement("input");
-        idField.name = "registrationId";
-        idField.value = decodedText;
-
-        const pinField = document.createElement("input");
-        pinField.name = "pin";
-        pinField.value = pin;
-
-        form.appendChild(idField);
-        form.appendChild(pinField);
-
-        document.body.appendChild(form);
-        form.submit();
-
+        verifyTicket(decodedText, pin);
       }).catch(() => {
-        submitting = false;
+        verifying = false;
         document.getElementById("status").textContent =
-          "Camera error. Please refresh and try again.";
+          "Camera could not stop. Refresh and try again.";
         document.getElementById("startButton").disabled = false;
       });
-
     },
 
     function(error) {}
 
   ).then(() => {
-
     scanning = true;
-
     document.getElementById("status").textContent =
       "Camera active. Ready to scan.";
-
     document.getElementById("startButton").disabled = false;
 
   }).catch(() => {
-
-    scanner = null;
     scanning = false;
+    scanner = null;
 
     document.getElementById("status").textContent =
       "Camera could not start. Allow camera access.";
-
     document.getElementById("startButton").disabled = false;
-
   });
 }
 
+function verifyTicket(registrationId, pin) {
+  const callbackName = "bumsaCallback_" + Date.now();
+  const script = document.createElement("script");
+  let completed = false;
+
+  window[callbackName] = function(response) {
+    completed = true;
+    clearTimeout(timeout);
+    delete window[callbackName];
+    script.remove();
+
+    verifying = false;
+
+    showResult(
+      response.success,
+      response.message,
+      response.name
+    );
+  };
+
+  const params = new URLSearchParams({
+    action: "checkin",
+    id: registrationId,
+    pin: pin,
+    callback: callbackName
+  });
+
+  script.src = SCRIPT_URL + "?" + params.toString();
+
+  script.onerror = function() {
+    if (completed) return;
+
+    clearTimeout(timeout);
+    delete window[callbackName];
+    script.remove();
+
+    verifying = false;
+
+    document.getElementById("status").textContent =
+      "Could not contact the check-in server.";
+
+    document.getElementById("startButton").disabled = false;
+  };
+
+  const timeout = setTimeout(() => {
+    if (completed) return;
+
+    delete window[callbackName];
+    script.remove();
+
+    verifying = false;
+
+    document.getElementById("status").textContent =
+      "Verification timed out. Please try again.";
+
+    document.getElementById("startButton").disabled = false;
+  }, 20000);
+
+  document.body.appendChild(script);
+}
+
+function showResult(success, message, name) {
+  document.getElementById("resultBox").style.display = "block";
+
+  document.getElementById("resultTitle").textContent =
+    success ? "CHECK-IN SUCCESSFUL" : "CHECK-IN FAILED";
+
+  document.getElementById("resultTitle").style.color =
+    success ? "#176b45" : "#c62828";
+
+  document.getElementById("resultMessage").textContent = message;
+
+  document.getElementById("studentName").textContent =
+    name ? "Student: " + name : "";
+
+  document.getElementById("status").textContent =
+    "Verification complete.";
+
+  document.getElementById("nextButton").style.display = "block";
+}
+
+function scanNext() {
+  document.getElementById("resultBox").style.display = "none";
+  document.getElementById("nextButton").style.display = "none";
+
+  document.getElementById("status").textContent =
+    "Starting camera for next student...";
+
+  startScanner();
+}
 </script>
 </body>
 </html>
